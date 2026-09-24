@@ -1,8 +1,30 @@
+import os
+from threading import Thread
+from flask import Flask
 import telebot
 from telebot import types
 from supabase import create_client, Client
 
-# --- TELEGRAM BOT VA SUPABASE SOZLAMALARI ---
+# --- 1. RENDER UCHUN BEPUL WEB SERVICE PORT SERVERI ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "AutoCare Hub Bot is running 24/7!"
+
+def run():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.daemon = True
+    t.start()
+
+# Serverni orqa fonda ishga tushirish (Render port xatoligi bermasligi uchun)
+keep_alive()
+
+# --- 2. TELEGRAM BOT VA SUPABASE SOZLAMALARI ---
 BOT_TOKEN = "8810746481:AAGzigosaPG6SC7ijhpzGRKesuX8f44dg3E"
 
 SUPABASE_URL = "https://lpxiiyahrttqdnkcfwcj.supabase.co"
@@ -29,7 +51,7 @@ def start_cmd(message):
 
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
 
-# --- 1. NAVBAT OLISH BO'LIMI ---
+# --- 3. NAVBAT OLISH BO'LIMI ---
 @bot.message_handler(func=lambda msg: msg.text == "📅 Navbat olish")
 def start_booking(message):
     msg = bot.send_message(
@@ -64,7 +86,7 @@ def process_booking_finish(message):
         print(f"Xato: {e}")
         bot.send_message(chat_id, "⚠️ Bazaga yozishda xatolik bo'ldi. Qaytadan urinib ko'ring.")
 
-# --- 2. NOMLANGAN MA'LUMOT YUBORISH BO'LIMI ---
+# --- 4. NOMLANGAN MA'LUMOT YUBORISH BO'LIMI ---
 @bot.message_handler(func=lambda msg: msg.text == "📩 Adminga ma'lumot yuborish")
 def start_info_send(message):
     msg = bot.send_message(message.chat.id, "Yuborilayotgan ma'lumot nomini (sarlavhasini) kiriting:")
@@ -95,7 +117,7 @@ def process_info_finish(message):
         print(f"Xato: {e}")
         bot.send_message(chat_id, "⚠️ Bazaga yozishda xatolik bo'ldi. Qaytadan urinib ko'ring.")
 
-# --- USTALAR VA XIZMATLAR RO'YXATI ---
+# --- 5. USTALAR VA XIZMATLAR RO'YXATI ---
 @bot.message_handler(func=lambda msg: msg.text == "👨‍🔧 Ustalarimiz")
 def show_mechanics(message):
     try:
@@ -129,5 +151,5 @@ def show_services(message):
         bot.reply_to(message, "Xizmatlarni yuklab bo'lmadi.")
 
 if __name__ == "__main__":
-    print("Bot muvaffaqiyatli ishga tushdi...")
+    print("Bot va Flask veb-serveri muvaffaqiyatli ishga tushirildi...")
     bot.polling(none_stop=True, interval=0)
