@@ -1,155 +1,244 @@
-import os
-from threading import Thread
-from flask import Flask
-import telebot
-from telebot import types
+import asyncio
+import logging
+import uuid
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import ReplyKeyboardRemove
 from supabase import create_client, Client
 
-# --- 1. RENDER UCHUN BEPUL WEB SERVICE PORT SERVERI ---
-app = Flask(__name__)
+# --- SOZLAMALAR ---
+BOT_TOKEN = "9173847420:AAFqibB74gbbOtbauRs3HKV89xNw_46KENg"
+SUPABASE_URL = "https://xddtaatcwgphtwxvfcce.supabase.co"
+SUPABASE_KEY = "sb_publishable_SgS2z53-9bjFh56EBKCIIg_G2Uqx4Ih"
 
-@app.route('/')
-def home():
-    return "AutoCare Hub Bot is running 24/7!"
-
-def run():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.daemon = True
-    t.start()
-
-# Serverni orqa fonda ishga tushirish (Render port xatoligi bermasligi uchun)
-keep_alive()
-
-# --- 2. TELEGRAM BOT VA SUPABASE SOZLAMALARI ---
-BOT_TOKEN = "8810746481:AAGzigosaPG6SC7ijhpzGRKesuX8f44dg3E"
-
-SUPABASE_URL = "https://lpxiiyahrttqdnkcfwcj.supabase.co"
-SUPABASE_KEY = "sb_publishable_3zbJwx_WnVIXXe0Vo6M1mw_Qe344aj6"
-
-bot = telebot.TeleBot(BOT_TOKEN)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-user_data = {}
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
 
-@bot.message_handler(commands=['start'])
-def start_cmd(message):
-    welcome_text = (
-        f"Salom, {message.from_user.first_name}!\n\n"
-        "🚗 **AutoCare Hub** — Avtomobilga xizmat ko'rsatish va navbat olish botiga xush kelibsiz!\n\n"
-        "Quyidagi menyudan kerakli bo'limni tanlang:"
+logging.basicConfig(level=logging.INFO)
+
+
+class BookingState(StatesGroup):
+    client_name = State()
+    car_number = State()
+    car_photo = State()
+    booking_time = State()
+
+
+@dp.message(Command("start"))
+async def send_welcome(message: types.Message):
+    user_name = message.from_user.first_name
+    await message.answer(
+        f"Assalomu alaykum, {user_name}!\n\n"
+        "AvtoServis & Ehtiyot qismlar botiga xush kelibsiz.\n\n"
+        "Buyruqlar:\n"
+        "/navbatlar - Faol navbatlarni ko'rish\n"
+        "/yozilish - Yangi navbatga yozilish\n"
+        "/ustalar - Ustalar ro'yxati\n"
+        "/zapchast - Ehtiyot qismlar",
+        parse_mode="Markdown"
     )
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = types.KeyboardButton("📅 Navbat olish")
-    btn2 = types.KeyboardButton("📩 Adminga ma'lumot yuborish")
-    btn3 = types.KeyboardButton("👨‍🔧 Ustalarimiz")
-    btn4 = types.KeyboardButton("💰 Narxlar va Xizmatlar")
-    markup.add(btn1, btn2, btn3, btn4)
 
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
 
-# --- 3. NAVBAT OLISH BO'LIMI ---
-@bot.message_handler(func=lambda msg: msg.text == "📅 Navbat olish")
-def start_booking(message):
-    msg = bot.send_message(
-        message.chat.id,
-        "Navbat olish uchun avtomobil rusumi va raqamini kiriting:\n<i>(Masalan: Gentra 01A777AA)</i>",
-        parse_mode="HTML"
-    )
-    bot.register_next_step_handler(msg, process_booking_car)
+# --- NAVBATGA YOZILISH ---
+@dp.message(Command("yozilish"))
+async def start_booking(message: types.Message, state: FSMContext):
+    await message.answer("Iltimos, ism va familiyangizni kiriting:")
+    await state.set_state(BookingState.client_name)
 
-def process_booking_car(message):
-    chat_id = message.chat.id
-    user_data[chat_id] = {'car': message.text}
-    msg = bot.send_message(chat_id, "Qaysi xizmat turi bo'yicha navbatga yozilmoqchisiz?")
-    bot.register_next_step_handler(msg, process_booking_finish)
 
-def process_booking_finish(message):
-    chat_id = message.chat.id
-    service_type = message.text
-    car_info = user_data.get(chat_id, {}).get('car', "Noma'lum")
-    username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {chat_id}"
+@dp.message(BookingState.client_name)
+async def process_name(message: types.Message, state: FSMContext):
+    await state.update_data(client_name=message.text)
+    await message.answer("Endi mashinangiz raqamini kiriting (masalan: 01A777AA):")
+    await state.set_state(BookingState.car_number)
+
+
+@dp.message(BookingState.car_number)
+async def process_car(message: types.Message, state: FSMContext):
+    await state.update_data(car_number=message.text)
+    await message.answer(
+        "Iltimos, mashinangiz rasmini yuboring (agar rasm yubormasangiz, istalgan matn yoki 'yo'q' deb yozib yuboring):")
+    await state.set_state(BookingState.car_photo)
+
+
+@dp.message(BookingState.car_photo)
+async def process_photo(message: types.Message, state: FSMContext):
+    car_image_url = None
+
+    if message.photo:
+        try:
+            photo = message.photo[-1]
+            file_info = await bot.get_file(photo.file_id)
+
+            # To'g'rilangan yuklab olish usuli
+            file_bytes_io = await bot.download_file(file_info.file_path)
+            file_bytes = file_bytes_io.read()
+
+            file_name = f"car_{uuid.uuid4().hex}.jpg"
+
+            # Supabase storagega yuklash
+            supabase.storage.from_("images").upload(
+                path=file_name,
+                file=file_bytes,
+                file_options={"content-type": "image/jpeg"}
+            )
+
+            # Ommaviy havolani olish
+            car_image_url = supabase.storage.from_("images").get_public_url(file_name)
+        except Exception as e:
+            logging.error(f"Rasm yuklashda xatolik: {e}")
+
+    await state.update_data(car_image_url=car_image_url)
+    await message.answer("Qaysi vaqtga yozilmoqchisiz? (Masalan: Bugun 14:00):")
+    await state.set_state(BookingState.booking_time)
+
+
+@dp.message(BookingState.booking_time)
+async def process_time(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    client_name = data.get("client_name")
+    car_number = data.get("car_number")
+    car_image_url = data.get("car_image_url")
+    booking_time = message.text
 
     try:
-        data = {
-            "telegram_user": username,
-            "car_details": car_info,
-            "service_type": f"[NAVBAT] {service_type}",
-            "status": "pending"
-        }
-        supabase.table("service_requests").insert(data).execute()
-        bot.send_message(chat_id, "✅ **Navbatingiz qabul qilindi!** Saytdagi Admin panelda ko'rinadi.", parse_mode="Markdown")
+        supabase.table("appointments").insert({
+            "client_name": client_name,
+            "car_number": car_number,
+            "car_image_url": car_image_url,
+            "booking_time": booking_time
+        }).execute()
+
+        text = (
+            "Muvaffaqiyatli navbatga yozildingiz!\n\n"
+            f"Ism: {client_name}\n"
+            f"Mashina: {car_number}\n"
+            f"Vaqt: {booking_time}\n\n"
+            "Ma'lumot bazaga va saytga qo'shildi!"
+        )
+
+        if car_image_url:
+            await message.answer_photo(
+                photo=car_image_url,
+                caption=text,
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            await message.answer(
+                text,
+                reply_markup=ReplyKeyboardRemove()
+            )
     except Exception as e:
-        print(f"Xato: {e}")
-        bot.send_message(chat_id, "⚠️ Bazaga yozishda xatolik bo'ldi. Qaytadan urinib ko'ring.")
+        await message.answer(f"Xatolik yuz berdi: {e}")
 
-# --- 4. NOMLANGAN MA'LUMOT YUBORISH BO'LIMI ---
-@bot.message_handler(func=lambda msg: msg.text == "📩 Adminga ma'lumot yuborish")
-def start_info_send(message):
-    msg = bot.send_message(message.chat.id, "Yuborilayotgan ma'lumot nomini (sarlavhasini) kiriting:")
-    bot.register_next_step_handler(msg, process_info_title)
+    await state.clear()
 
-def process_info_title(message):
-    chat_id = message.chat.id
-    user_data[chat_id] = {'title': message.text}
-    msg = bot.send_message(chat_id, "Endi batafsil ma'lumot yoki izohingizni yozib qoldiring:")
-    bot.register_next_step_handler(msg, process_info_finish)
 
-def process_info_finish(message):
-    chat_id = message.chat.id
-    description = message.text
-    title = user_data.get(chat_id, {}).get('title', "Sarlavhasiz")
-    username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {chat_id}"
-
+@dp.message(Command("navbatlar"))
+async def get_appointments(message: types.Message):
     try:
-        data = {
-            "telegram_user": username,
-            "car_details": f"Sarlavha: {title}",
-            "service_type": f"[MA'LUMOT] {description}",
-            "status": "pending"
-        }
-        supabase.table("service_requests").insert(data).execute()
-        bot.send_message(chat_id, "✅ **Ma'lumotingiz nomlanib adminga yuborildi!** Saytda ko'rinadi.", parse_mode="Markdown")
-    except Exception as e:
-        print(f"Xato: {e}")
-        bot.send_message(chat_id, "⚠️ Bazaga yozishda xatolik bo'ldi. Qaytadan urinib ko'ring.")
+        response = supabase.table("appointments").select("*").execute()
+        data = response.data
 
-# --- 5. USTALAR VA XIZMATLAR RO'YXATI ---
-@bot.message_handler(func=lambda msg: msg.text == "👨‍🔧 Ustalarimiz")
-def show_mechanics(message):
-    try:
-        res = supabase.table("mechanics").select("*").execute()
-        if not res.data:
-            bot.send_message(message.chat.id, "Hozircha ustalar ro'yxati bo'sh.")
+        if not data:
+            await message.answer("Hozircha faol navbatlar yo'q.")
             return
 
-        text = "<b>🛠️ AutoCare Hub Ustalarimiz:</b>\n\n"
-        for m in res.data:
-            text += f"👤 <b>{m.get('name', 'Usta')}</b> - {m.get('specialty', 'Avto usta')}\n📞 Tel: {m.get('phone', 'Mavjud emas')}\n-------------------------\n"
-        bot.send_message(message.chat.id, text, parse_mode="HTML")
-    except Exception as e:
-        print(f"Xato: {e}")
-        bot.reply_to(message, "Ustalar ro'yxatini yuklab bo'lmadi.")
+        for item in data[-5:]:
+            client_name = item.get('client_name', 'Noma\'lum')
+            car_number = item.get('car_number', '-')
+            booking_time = item.get('booking_time', '-')
+            car_image_url = item.get('car_image_url')
 
-@bot.message_handler(func=lambda msg: msg.text == "💰 Narxlar va Xizmatlar")
-def show_services(message):
+            text = f"👤 Ism: {client_name}\n🚗 Mashina: {car_number}\n⏰ Vaqt: {booking_time}"
+
+            if car_image_url:
+                try:
+                    await message.answer_photo(photo=car_image_url, caption=text)
+                except Exception:
+                    await message.answer(text)
+            else:
+                await message.answer(text)
+    except Exception as e:
+        await message.answer(f"Xatolik: {e}")
+
+
+# --- USTALAR ---
+@dp.message(Command("ustalar"))
+async def get_masters(message: types.Message):
     try:
-        res = supabase.table("services").select("*").execute()
-        if not res.data:
-            bot.send_message(message.chat.id, "Hozircha xizmatlar ro'yxati bo'sh.")
+        response = supabase.table("masters").select("*").execute()
+        data = response.data
+
+        if not data:
+            await message.answer("Hozircha ustalar ro'yxati bo'sh.")
             return
 
-        text = "<b>💳 Xizmatlar va Narxlar:</b>\n\n"
-        for s in res.data:
-            text += f"🔧 <b>{s.get('title', 'Xizmat')}</b>\n💵 Narxi: {s.get('price', 'Kelishilgan')} so'm\n-------------------------\n"
-        bot.send_message(message.chat.id, text, parse_mode="HTML")
+        for item in data:
+            name = item.get('name', 'Noma\'lum')
+            speciality = item.get('speciality', 'Ko\'rsatilmagan')
+            is_available = item.get('available')
+            status = "🟢 Bo'sh" if is_available else "🔴 Band"
+            image_url = item.get('image_url')
+
+            caption = (
+                f"👨‍🔧 **Ism:** {name}\n"
+                f"🛠 **Mutaxassisligi:** {speciality}\n"
+                f"📌 **Holati:** {status}"
+            )
+
+            if image_url:
+                try:
+                    await message.answer_photo(photo=image_url, caption=caption, parse_mode="Markdown")
+                except Exception:
+                    await message.answer(caption, parse_mode="Markdown")
+            else:
+                await message.answer(caption, parse_mode="Markdown")
     except Exception as e:
-        print(f"Xato: {e}")
-        bot.reply_to(message, "Xizmatlarni yuklab bo'lmadi.")
+        await message.answer(f"Xatolik yuz berdi: {e}")
+
+
+# --- EHTIYOT QISMLAR ---
+@dp.message(Command("zapchast"))
+async def get_spare_parts(message: types.Message):
+    try:
+        response = supabase.table("spare_parts").select("*").execute()
+        data = response.data
+
+        if not data:
+            await message.answer("Hozircha ehtiyot qismlar yo'q.")
+            return
+
+        for item in data:
+            name = item.get('name', 'Noma\'lum')
+            price = item.get('price', 'Ko\'rsatilmagan')
+            image_url = item.get('image_url')
+
+            caption = (
+                f"⚙️ **Nomi:** {name}\n"
+                f"💰 **Narxi:** {price}"
+            )
+
+            if image_url:
+                try:
+                    await message.answer_photo(photo=image_url, caption=caption, parse_mode="Markdown")
+                except Exception:
+                    await message.answer(caption, parse_mode="Markdown")
+            else:
+                await message.answer(caption, parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"Xatolik: {e}")
+
+
+async def main():
+    print("Bot muvaffaqiyatli ishga tushdi!")
+    await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    print("Bot va Flask veb-serveri muvaffaqiyatli ishga tushirildi...")
-    bot.polling(none_stop=True, interval=0)
+    asyncio.run(main())
